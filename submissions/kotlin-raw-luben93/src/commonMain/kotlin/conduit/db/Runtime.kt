@@ -39,7 +39,7 @@ internal class DbRuntime(@JvmField val config: DbConfig, reads: List<ReadKind>, 
         val list = ArrayList<PgStatement>()
         reads.forEachIndexed { i, k ->
             k.id = i
-            list.add(PgStatement("s$i", k.sql, READ_OIDS, "read kind '${k.name}'"))
+            list.add(PgStatement("s$i", k.sql, if (k.broadcast) IntArray(0) else READ_OIDS, "read kind '${k.name}'"))
         }
         writes.forEachIndexed { j, w ->
             w.id = j

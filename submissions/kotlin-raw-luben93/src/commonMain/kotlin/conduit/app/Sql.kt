@@ -54,10 +54,15 @@ internal object Cols {
 }
 
 internal object Sql {
-    /** Row: i, names text[] (sorted by name). */
+    /**
+     * Row: names text[] (sorted by name; an index-only scan of tags_name_key). Broadcast: every tags request queued
+     * when a read connection frees is answered by one execution (see [ReadKind.broadcast]).
+     */
     val TAGS = ReadKind(
         "tags",
-        "SELECT r.i, ARRAY(SELECT t.name FROM tags t WHERE r.i >= 0 ORDER BY t.name) FROM $U",
+        "SELECT ARRAY(SELECT t.name FROM tags t ORDER BY t.name)",
+        maxBatch = 1024,
+        broadcast = true,
     )
 
     /** k = slug. Row: i, full article. No row: 404. */

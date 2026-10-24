@@ -5,12 +5,15 @@ import conduit.auth.Jwt
 import conduit.auth.Passwords
 import conduit.db.Db
 import conduit.db.DbConfig
+import conduit.db.sleepNanos
 import conduit.http.HttpEngine
+import conduit.platform.Monitor
 import conduit.platform.cpuCount
 import conduit.platform.getenv
 import conduit.platform.parkForever
 import conduit.platform.platformInit
 import conduit.platform.startHttpServer
+import conduit.platform.startThread
 
 // Session settings sent in the startup packet (no extra round trip): generic plans (no planning per execution),
 // no JIT or parallel workers (pure overhead for small queries), no Memoize (in a batched statement it could hand one
@@ -46,5 +49,16 @@ fun main() {
         "conduit: listening on $host:$port (cpus=$cpus http=$httpThreads db=$readConns+$writeConns " +
             "bcrypt=$bcryptThreads; $platform)",
     )
+    // DB_STATS_S=<seconds> (diagnostics): logs batching statistics periodically.
+    val statsEvery = envInt("DB_STATS_S", 0)
+    if (statsEvery > 0) {
+        startThread("db-stats") {
+            val m = Monitor()
+            while (true) {
+                sleepNanos(m, statsEvery * 1_000_000_000L)
+                println(Db.stats())
+            }
+        }
+    }
     parkForever()
 }
