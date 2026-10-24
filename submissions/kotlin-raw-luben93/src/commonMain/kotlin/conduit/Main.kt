@@ -43,11 +43,13 @@ fun main() {
 
     Jwt.init(secret)
     Passwords.start(bcryptThreads, bcryptWindow)
-    Db.start(DbConfig.fromUrl(dbUrl, readConns, writeConns, options), App.reads, App.writes)
+    val dbConfig = DbConfig.fromUrl(dbUrl, readConns, writeConns, options)
+    App.configure(Db.query(dbConfig, App.COLLATION_PROBE).firstOrNull(), appSortsTags = envInt("APP_SORT_TAGS", 1) != 0)
+    Db.start(dbConfig, App.reads, App.writes)
     startHttpServer(host, port, httpThreads, HttpEngine { ex -> App.handle(ex) })
     println(
         "conduit: listening on $host:$port (cpus=$cpus http=$httpThreads db=$readConns+$writeConns " +
-            "bcrypt=$bcryptThreads; $platform)",
+            "bcrypt=$bcryptThreads; tags sorted by ${App.tagOrder}; $platform)",
     )
     // DB_STATS_S=<seconds> (diagnostics): logs batching statistics periodically.
     val statsEvery = envInt("DB_STATS_S", 0)

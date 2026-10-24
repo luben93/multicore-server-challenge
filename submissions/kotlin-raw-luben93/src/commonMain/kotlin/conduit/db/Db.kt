@@ -2,6 +2,7 @@ package conduit.db
 
 import conduit.pg.Params
 import conduit.pg.Result
+import conduit.platform.Monitor
 import conduit.util.ByteBuf
 import kotlin.concurrent.Volatile
 
@@ -181,6 +182,19 @@ object Db {
      */
     suspend fun write(stmt: WriteStmt, params: Params, isolated: Boolean = false): Result =
         rt().write(stmt, params, isolated)
+
+    /**
+     * Runs one simple query on a short-lived connection and returns its rows as text (startup probes, before
+     * [start]); waits for Postgres the way [start] does.
+     */
+    fun query(config: DbConfig, sql: String): List<List<String?>> {
+        val c = connectPatiently(config, emptyList(), Monitor())
+        try {
+            return c.simpleQuery(sql)
+        } finally {
+            c.close()
+        }
+    }
 
     /** One line of batching / group-commit / connection statistics, for logs. */
     fun stats(): String = runtime?.stats() ?: "db: not started"

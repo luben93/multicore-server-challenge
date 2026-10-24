@@ -60,6 +60,18 @@ class SqlTest {
     }
 
     @Test
+    fun byteOrderCollations() {
+        assertTrue(TagOrder.isByteOrder("c", "C", ""))
+        assertTrue(TagOrder.isByteOrder("c", "POSIX", ""))
+        assertTrue(TagOrder.isByteOrder("c", "C.UTF-8", ""))
+        assertTrue(TagOrder.isByteOrder("b", "C", "C.UTF-8"))
+        assertTrue(TagOrder.isByteOrder("b", "C", "C"))
+        assertFalse(TagOrder.isByteOrder("c", "en_US.UTF-8", ""))
+        assertFalse(TagOrder.isByteOrder("b", "C", "PG_UNICODE_FAST"))
+        assertFalse(TagOrder.isByteOrder("i", "und", "und"))
+    }
+
+    @Test
     fun writesDeclareEveryParameter() {
         val names = HashSet<String>()
         for (w in Sql.writes) {
