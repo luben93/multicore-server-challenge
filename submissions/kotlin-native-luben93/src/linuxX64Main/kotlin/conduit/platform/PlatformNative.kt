@@ -81,6 +81,7 @@ private const val SYS_SCHED_GETAFFINITY = 204L
 
 actual fun platformInit(): String {
     signal(SIGPIPE, SIG_IGN)
+    val gc = gcInit()
     val limit = memScoped {
         val rl = alloc<rlimit>()
         getrlimit(RLIMIT_NOFILE, rl.ptr)
@@ -91,7 +92,43 @@ actual fun platformInit(): String {
         }
         rl.rlim_cur.toLong()
     }
-    return "kotlin/native, RLIMIT_NOFILE $limit"
+    return "kotlin/native, RLIMIT_NOFILE $limit, $gc"
+}
+
+/**
+ * The GC's heap target defaults to 10 MiB, so a server allocating tens of MB/s would collect many times a second
+ * (each collection marks the whole live heap: every connection's state). GC_HEAP_MB (default 512) raises the floor
+ * of the autotuned target; GC_LOG=1 prints collections per 10 s with the last pause.
+ */
+@OptIn(kotlin.native.runtime.NativeRuntimeApi::class)
+private fun gcInit(): String {
+    val mb = getenv("GC_HEAP_MB")?.trim()?.toLongOrNull() ?: 512L
+    if (mb > 0) {
+        val bytes = mb shl 20
+        kotlin.native.runtime.GC.minHeapBytes = bytes
+        kotlin.native.runtime.GC.targetHeapBytes = bytes
+    }
+    if (getenv("GC_LOG") == "1") startThread("gc-log") { gcLog() }
+    return "gc heap target ${kotlin.native.runtime.GC.targetHeapBytes shr 20} MiB"
+}
+
+@OptIn(kotlin.native.runtime.NativeRuntimeApi::class, ExperimentalStdlibApi::class)
+private fun gcLog() {
+    var lastEpoch = -1L
+    while (true) {
+        sleep(10u)
+        val i = kotlin.native.runtime.GC.lastGCInfo ?: continue
+        val before = i.memoryUsageBefore.values.sumOf { it.totalObjectsSizeBytes } shr 20
+        val after = i.memoryUsageAfter.values.sumOf { it.totalObjectsSizeBytes } shr 20
+        val pause = (i.firstPauseEndTimeNs - i.firstPauseStartTimeNs) / 1000
+        println(
+            "gc: epoch ${i.epoch} (+${if (lastEpoch < 0) 0 else i.epoch - lastEpoch}/10s) " +
+                "last: ${(i.endTimeNs - i.startTimeNs) / 1000} us total, pause $pause us, " +
+                "heap $before -> $after MiB, marked ${i.markedCount}, " +
+                "target ${kotlin.native.runtime.GC.targetHeapBytes shr 20} MiB",
+        )
+        lastEpoch = i.epoch
+    }
 }
 
 actual fun nanoTime(): Long = memScoped {

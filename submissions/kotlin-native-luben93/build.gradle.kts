@@ -17,6 +17,16 @@ kotlin {
             executable {
                 entryPoint = "conduit.main"
                 baseName = "conduit"
+                // LLVM codegen for the build machine's CPU (= the box: build.sh runs there). build.sh detects the
+                // CPU name and its full +/- feature list with Kotlin/Native's own clang (-march=native); the full
+                // list matters, a bare CPU name could emit instructions a hypervisor masks (SIGILL). Without the
+                // properties: Kotlin/Native's portable default (x86-64, SSE2).
+                val cpu = providers.gradleProperty("conduit.targetCpu").orNull?.trim()
+                val features = providers.gradleProperty("conduit.targetCpuFeatures").orNull?.trim()
+                if (!cpu.isNullOrEmpty() && !features.isNullOrEmpty()) {
+                    freeCompilerArgs += "-Xoverride-konan-properties=" +
+                        "targetCpu.linux_x64=$cpu;targetCpuFeatures.linux_x64=$features"
+                }
             }
         }
     }
