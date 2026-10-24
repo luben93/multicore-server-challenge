@@ -1,0 +1,330 @@
+=== TAG_LIST (123 chars)
+ARRAY(SELECT (SELECT t.name FROM tags t WHERE t.id = at.tag_id) FROM article_tags at WHERE at.article_id = a.id ORDER BY 1)
+
+=== ARTICLE_LIST_SELECT (608 chars)
+
+SELECT a.id, a.slug, a.title, a.description, a.created_at, a.updated_at,
+       ARRAY(SELECT (SELECT t.name FROM tags t WHERE t.id = at.tag_id) FROM article_tags at WHERE at.article_id = a.id ORDER BY 1) AS tag_list,
+       (SELECT count(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+       EXISTS (SELECT 1 FROM favorites f WHERE f.article_id = a.id AND f.user_id = ?) AS favorited,
+       u.username, u.bio, u.image,
+       EXISTS (SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followee_id = a.author_id) AS following
+  FROM articles a
+  JOIN users u ON u.id = a.author_id
+
+
+=== FEED_SELECT (521 chars)
+
+SELECT a.id, a.slug, a.title, a.description, a.created_at, a.updated_at,
+       ARRAY(SELECT (SELECT t.name FROM tags t WHERE t.id = at.tag_id) FROM article_tags at WHERE at.article_id = a.id ORDER BY 1) AS tag_list,
+       (SELECT count(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+       EXISTS (SELECT 1 FROM favorites f WHERE f.article_id = a.id AND f.user_id = ?) AS favorited,
+       u.username, u.bio, u.image,
+       true AS following
+  FROM articles a
+  JOIN users u ON u.id = a.author_id
+
+
+=== ARTICLE_FULL_SELECT (616 chars)
+
+SELECT a.id, a.slug, a.title, a.description, a.body, a.created_at, a.updated_at,
+       ARRAY(SELECT (SELECT t.name FROM tags t WHERE t.id = at.tag_id) FROM article_tags at WHERE at.article_id = a.id ORDER BY 1) AS tag_list,
+       (SELECT count(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+       EXISTS (SELECT 1 FROM favorites f WHERE f.article_id = a.id AND f.user_id = ?) AS favorited,
+       u.username, u.bio, u.image,
+       EXISTS (SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followee_id = a.author_id) AS following
+  FROM articles a
+  JOIN users u ON u.id = a.author_id
+
+
+=== SLUGIFY (71 chars)
+trim(both '-' from lower(regexp_replace(?, '[^A-Za-z0-9]+', '-', 'g')))
+
+=== USER_INSERT (110 chars)
+
+INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)
+RETURNING id, username, email, bio, image
+
+=== USER_BY_EMAIL (80 chars)
+SELECT id, username, email, bio, image, password_hash FROM users WHERE email = ?
+
+=== USER_BY_ID (62 chars)
+SELECT id, username, email, bio, image FROM users WHERE id = ?
+
+=== USER_UPDATE (247 chars)
+
+UPDATE users SET email = COALESCE(?, email), username = COALESCE(?, username),
+                 password_hash = COALESCE(?, password_hash), bio = COALESCE(?, bio), image = COALESCE(?, image)
+ WHERE id = ?
+RETURNING id, username, email, bio, image
+
+=== PROFILE (182 chars)
+
+SELECT u.id, u.username, u.bio, u.image,
+       EXISTS (SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followee_id = u.id) AS following
+  FROM users u WHERE u.username = ?
+
+=== FOLLOW_BY_USERNAME (250 chars)
+
+WITH target AS (SELECT id, username, bio, image FROM users WHERE username = ?),
+     added AS (INSERT INTO follows (follower_id, followee_id) SELECT ?, id FROM target ON CONFLICT DO NOTHING)
+SELECT username, bio, image, true AS following FROM target
+
+=== UNFOLLOW_BY_USERNAME (243 chars)
+
+WITH target AS (SELECT id, username, bio, image FROM users WHERE username = ?),
+     removed AS (DELETE FROM follows WHERE follower_id = ? AND followee_id IN (SELECT id FROM target))
+SELECT username, bio, image, false AS following FROM target
+
+=== LIST_ALL (756 chars)
+
+SELECT a.id, a.slug, a.title, a.description, a.created_at, a.updated_at,
+       ARRAY(SELECT (SELECT t.name FROM tags t WHERE t.id = at.tag_id) FROM article_tags at WHERE at.article_id = a.id ORDER BY 1) AS tag_list,
+       (SELECT count(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+       EXISTS (SELECT 1 FROM favorites f WHERE f.article_id = a.id AND f.user_id = ?) AS favorited,
+       u.username, u.bio, u.image,
+       EXISTS (SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followee_id = a.author_id) AS following
+  FROM articles a
+  JOIN users u ON u.id = a.author_id
+WHERE a.id IN (SELECT b.id FROM (SELECT p.id FROM articles p ORDER BY p.id DESC OFFSET ? LIMIT 100) b ORDER BY b.id DESC LIMIT ?) ORDER BY a.id DESC
+
+=== COUNT_ALL (78 chars)
+SELECT count(*) AS articles_count FROM (SELECT 1 FROM articles a LIMIT 1000) s
+
+=== LIST_BY_TAG (856 chars)
+
+SELECT a.id, a.slug, a.title, a.description, a.created_at, a.updated_at,
+       ARRAY(SELECT (SELECT t.name FROM tags t WHERE t.id = at.tag_id) FROM article_tags at WHERE at.article_id = a.id ORDER BY 1) AS tag_list,
+       (SELECT count(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+       EXISTS (SELECT 1 FROM favorites f WHERE f.article_id = a.id AND f.user_id = ?) AS favorited,
+       u.username, u.bio, u.image,
+       EXISTS (SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followee_id = a.author_id) AS following
+  FROM articles a
+  JOIN users u ON u.id = a.author_id
+WHERE a.id IN (SELECT b.article_id FROM (SELECT at.article_id FROM article_tags at WHERE at.tag_id = (SELECT t.id FROM tags t WHERE t.name = ?) ORDER BY at.article_id DESC OFFSET ? LIMIT 100) b ORDER BY b.article_id DESC LIMIT ?) ORDER BY a.id DESC
+
+=== COUNT_BY_TAG (144 chars)
+SELECT count(*) AS articles_count FROM (SELECT 1 FROM article_tags at WHERE at.tag_id = (SELECT t.id FROM tags t WHERE t.name = ?) LIMIT 1000) s
+
+=== LIST_BY_AUTHOR (827 chars)
+
+SELECT a.id, a.slug, a.title, a.description, a.created_at, a.updated_at,
+       ARRAY(SELECT (SELECT t.name FROM tags t WHERE t.id = at.tag_id) FROM article_tags at WHERE at.article_id = a.id ORDER BY 1) AS tag_list,
+       (SELECT count(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+       EXISTS (SELECT 1 FROM favorites f WHERE f.article_id = a.id AND f.user_id = ?) AS favorited,
+       u.username, u.bio, u.image,
+       EXISTS (SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followee_id = a.author_id) AS following
+  FROM articles a
+  JOIN users u ON u.id = a.author_id
+WHERE a.id IN (SELECT b.id FROM (SELECT p.id FROM articles p WHERE p.author_id = (SELECT au.id FROM users au WHERE au.username = ?) ORDER BY p.id DESC OFFSET ? LIMIT 100) b ORDER BY b.id DESC LIMIT ?) ORDER BY a.id DESC
+
+=== COUNT_BY_AUTHOR (146 chars)
+SELECT count(*) AS articles_count FROM (SELECT 1 FROM articles a WHERE a.author_id = (SELECT u.id FROM users u WHERE u.username = ?) LIMIT 1000) s
+
+=== LIST_FAVORITED_BY (858 chars)
+
+SELECT a.id, a.slug, a.title, a.description, a.created_at, a.updated_at,
+       ARRAY(SELECT (SELECT t.name FROM tags t WHERE t.id = at.tag_id) FROM article_tags at WHERE at.article_id = a.id ORDER BY 1) AS tag_list,
+       (SELECT count(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+       EXISTS (SELECT 1 FROM favorites f WHERE f.article_id = a.id AND f.user_id = ?) AS favorited,
+       u.username, u.bio, u.image,
+       EXISTS (SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followee_id = a.author_id) AS following
+  FROM articles a
+  JOIN users u ON u.id = a.author_id
+WHERE a.id IN (SELECT b.article_id FROM (SELECT f.article_id FROM favorites f WHERE f.user_id = (SELECT fu.id FROM users fu WHERE fu.username = ?) ORDER BY f.article_id DESC OFFSET ? LIMIT 100) b ORDER BY b.article_id DESC LIMIT ?) ORDER BY a.id DESC
+
+=== COUNT_FAVORITED_BY (148 chars)
+SELECT count(*) AS articles_count FROM (SELECT 1 FROM favorites f WHERE f.user_id = (SELECT fu.id FROM users fu WHERE fu.username = ?) LIMIT 1000) s
+
+=== FEED (833 chars)
+
+SELECT a.id, a.slug, a.title, a.description, a.created_at, a.updated_at,
+       ARRAY(SELECT (SELECT t.name FROM tags t WHERE t.id = at.tag_id) FROM article_tags at WHERE at.article_id = a.id ORDER BY 1) AS tag_list,
+       (SELECT count(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+       EXISTS (SELECT 1 FROM favorites f WHERE f.article_id = a.id AND f.user_id = ?) AS favorited,
+       u.username, u.bio, u.image,
+       true AS following
+  FROM articles a
+  JOIN users u ON u.id = a.author_id
+WHERE a.id IN (SELECT b.id FROM (SELECT x.id FROM follows fo CROSS JOIN LATERAL (SELECT a2.id FROM articles a2 WHERE a2.author_id = fo.followee_id ORDER BY a2.id DESC LIMIT (?::bigint + ?::bigint)) x WHERE fo.follower_id = ? ORDER BY x.id DESC OFFSET ? LIMIT 100) b ORDER BY b.id DESC LIMIT ?) ORDER BY a.id DESC
+
+=== COUNT_FEED (164 chars)
+SELECT count(*) AS articles_count FROM (SELECT 1 FROM articles a WHERE a.author_id IN (SELECT fo.followee_id FROM follows fo WHERE fo.follower_id = ?) LIMIT 1000) s
+
+=== PAGE_WITH_COUNT_START (42 chars)
+SELECT total.articles_count, page.* FROM (
+
+=== PAGE_WITH_COUNT_MIDDLE (19 chars)
+) total LEFT JOIN (
+
+=== PAGE_WITH_COUNT_END (36 chars)
+) page ON true ORDER BY page.id DESC
+
+=== PAGE_ALL (931 chars)
+SELECT total.articles_count, page.* FROM (SELECT count(*) AS articles_count FROM (SELECT 1 FROM articles a LIMIT 1000) s) total LEFT JOIN (
+SELECT a.id, a.slug, a.title, a.description, a.created_at, a.updated_at,
+       ARRAY(SELECT (SELECT t.name FROM tags t WHERE t.id = at.tag_id) FROM article_tags at WHERE at.article_id = a.id ORDER BY 1) AS tag_list,
+       (SELECT count(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+       EXISTS (SELECT 1 FROM favorites f WHERE f.article_id = a.id AND f.user_id = ?) AS favorited,
+       u.username, u.bio, u.image,
+       EXISTS (SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followee_id = a.author_id) AS following
+  FROM articles a
+  JOIN users u ON u.id = a.author_id
+WHERE a.id IN (SELECT b.id FROM (SELECT p.id FROM articles p ORDER BY p.id DESC OFFSET ? LIMIT 100) b ORDER BY b.id DESC LIMIT ?) ORDER BY a.id DESC) page ON true ORDER BY page.id DESC
+
+=== PAGE_BY_TAG (1097 chars)
+SELECT total.articles_count, page.* FROM (SELECT count(*) AS articles_count FROM (SELECT 1 FROM article_tags at WHERE at.tag_id = (SELECT t.id FROM tags t WHERE t.name = ?) LIMIT 1000) s) total LEFT JOIN (
+SELECT a.id, a.slug, a.title, a.description, a.created_at, a.updated_at,
+       ARRAY(SELECT (SELECT t.name FROM tags t WHERE t.id = at.tag_id) FROM article_tags at WHERE at.article_id = a.id ORDER BY 1) AS tag_list,
+       (SELECT count(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+       EXISTS (SELECT 1 FROM favorites f WHERE f.article_id = a.id AND f.user_id = ?) AS favorited,
+       u.username, u.bio, u.image,
+       EXISTS (SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followee_id = a.author_id) AS following
+  FROM articles a
+  JOIN users u ON u.id = a.author_id
+WHERE a.id IN (SELECT b.article_id FROM (SELECT at.article_id FROM article_tags at WHERE at.tag_id = (SELECT t.id FROM tags t WHERE t.name = ?) ORDER BY at.article_id DESC OFFSET ? LIMIT 100) b ORDER BY b.article_id DESC LIMIT ?) ORDER BY a.id DESC) page ON true ORDER BY page.id DESC
+
+=== PAGE_BY_AUTHOR (1070 chars)
+SELECT total.articles_count, page.* FROM (SELECT count(*) AS articles_count FROM (SELECT 1 FROM articles a WHERE a.author_id = (SELECT u.id FROM users u WHERE u.username = ?) LIMIT 1000) s) total LEFT JOIN (
+SELECT a.id, a.slug, a.title, a.description, a.created_at, a.updated_at,
+       ARRAY(SELECT (SELECT t.name FROM tags t WHERE t.id = at.tag_id) FROM article_tags at WHERE at.article_id = a.id ORDER BY 1) AS tag_list,
+       (SELECT count(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+       EXISTS (SELECT 1 FROM favorites f WHERE f.article_id = a.id AND f.user_id = ?) AS favorited,
+       u.username, u.bio, u.image,
+       EXISTS (SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followee_id = a.author_id) AS following
+  FROM articles a
+  JOIN users u ON u.id = a.author_id
+WHERE a.id IN (SELECT b.id FROM (SELECT p.id FROM articles p WHERE p.author_id = (SELECT au.id FROM users au WHERE au.username = ?) ORDER BY p.id DESC OFFSET ? LIMIT 100) b ORDER BY b.id DESC LIMIT ?) ORDER BY a.id DESC) page ON true ORDER BY page.id DESC
+
+=== PAGE_FAVORITED_BY (1103 chars)
+SELECT total.articles_count, page.* FROM (SELECT count(*) AS articles_count FROM (SELECT 1 FROM favorites f WHERE f.user_id = (SELECT fu.id FROM users fu WHERE fu.username = ?) LIMIT 1000) s) total LEFT JOIN (
+SELECT a.id, a.slug, a.title, a.description, a.created_at, a.updated_at,
+       ARRAY(SELECT (SELECT t.name FROM tags t WHERE t.id = at.tag_id) FROM article_tags at WHERE at.article_id = a.id ORDER BY 1) AS tag_list,
+       (SELECT count(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+       EXISTS (SELECT 1 FROM favorites f WHERE f.article_id = a.id AND f.user_id = ?) AS favorited,
+       u.username, u.bio, u.image,
+       EXISTS (SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followee_id = a.author_id) AS following
+  FROM articles a
+  JOIN users u ON u.id = a.author_id
+WHERE a.id IN (SELECT b.article_id FROM (SELECT f.article_id FROM favorites f WHERE f.user_id = (SELECT fu.id FROM users fu WHERE fu.username = ?) ORDER BY f.article_id DESC OFFSET ? LIMIT 100) b ORDER BY b.article_id DESC LIMIT ?) ORDER BY a.id DESC) page ON true ORDER BY page.id DESC
+
+=== PAGE_FEED (1094 chars)
+SELECT total.articles_count, page.* FROM (SELECT count(*) AS articles_count FROM (SELECT 1 FROM articles a WHERE a.author_id IN (SELECT fo.followee_id FROM follows fo WHERE fo.follower_id = ?) LIMIT 1000) s) total LEFT JOIN (
+SELECT a.id, a.slug, a.title, a.description, a.created_at, a.updated_at,
+       ARRAY(SELECT (SELECT t.name FROM tags t WHERE t.id = at.tag_id) FROM article_tags at WHERE at.article_id = a.id ORDER BY 1) AS tag_list,
+       (SELECT count(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+       EXISTS (SELECT 1 FROM favorites f WHERE f.article_id = a.id AND f.user_id = ?) AS favorited,
+       u.username, u.bio, u.image,
+       true AS following
+  FROM articles a
+  JOIN users u ON u.id = a.author_id
+WHERE a.id IN (SELECT b.id FROM (SELECT x.id FROM follows fo CROSS JOIN LATERAL (SELECT a2.id FROM articles a2 WHERE a2.author_id = fo.followee_id ORDER BY a2.id DESC LIMIT (?::bigint + ?::bigint)) x WHERE fo.follower_id = ? ORDER BY x.id DESC OFFSET ? LIMIT 100) b ORDER BY b.id DESC LIMIT ?) ORDER BY a.id DESC) page ON true ORDER BY page.id DESC
+
+=== ARTICLE_BY_SLUG (632 chars)
+
+SELECT a.id, a.slug, a.title, a.description, a.body, a.created_at, a.updated_at,
+       ARRAY(SELECT (SELECT t.name FROM tags t WHERE t.id = at.tag_id) FROM article_tags at WHERE at.article_id = a.id ORDER BY 1) AS tag_list,
+       (SELECT count(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+       EXISTS (SELECT 1 FROM favorites f WHERE f.article_id = a.id AND f.user_id = ?) AS favorited,
+       u.username, u.bio, u.image,
+       EXISTS (SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followee_id = a.author_id) AS following
+  FROM articles a
+  JOIN users u ON u.id = a.author_id
+WHERE a.slug = ?
+
+=== ARTICLE_BY_ID (630 chars)
+
+SELECT a.id, a.slug, a.title, a.description, a.body, a.created_at, a.updated_at,
+       ARRAY(SELECT (SELECT t.name FROM tags t WHERE t.id = at.tag_id) FROM article_tags at WHERE at.article_id = a.id ORDER BY 1) AS tag_list,
+       (SELECT count(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+       EXISTS (SELECT 1 FROM favorites f WHERE f.article_id = a.id AND f.user_id = ?) AS favorited,
+       u.username, u.bio, u.image,
+       EXISTS (SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followee_id = a.author_id) AS following
+  FROM articles a
+  JOIN users u ON u.id = a.author_id
+WHERE a.id = ?
+
+=== TAGS_INSERT (87 chars)
+INSERT INTO tags (name) SELECT DISTINCT unnest(?::text[]) ON CONFLICT (name) DO NOTHING
+
+=== ARTICLE_INSERT (462 chars)
+
+WITH created AS (
+  INSERT INTO articles (id, slug, author_id, title, description, body)
+  SELECT n.id, trim(both '-' from lower(regexp_replace(?, '[^A-Za-z0-9]+', '-', 'g'))) || '-' || n.id, ?, ?, ?, ?
+    FROM (SELECT nextval(pg_get_serial_sequence('articles', 'id')) AS id) n
+  RETURNING id),
+     linked AS (
+  INSERT INTO article_tags (article_id, tag_id)
+  SELECT created.id, t.id FROM created, tags t WHERE t.name = ANY(?::text[]))
+SELECT id FROM created
+
+=== ARTICLE_OWNER (49 chars)
+SELECT id, author_id FROM articles WHERE slug = ?
+
+=== ARTICLE_UPDATE (299 chars)
+
+UPDATE articles SET title = COALESCE(?, title), description = COALESCE(?, description), body = COALESCE(?, body),
+       slug = CASE WHEN ?::text IS NULL THEN slug ELSE trim(both '-' from lower(regexp_replace(?, '[^A-Za-z0-9]+', '-', 'g'))) || '-' || id END,
+       updated_at = now()
+ WHERE id = ?
+
+=== ARTICLE_DELETE (33 chars)
+DELETE FROM articles WHERE id = ?
+
+=== FAVORITE_BY_SLUG (779 chars)
+
+WITH target AS (SELECT id FROM articles WHERE slug = ?),
+     added AS (INSERT INTO favorites (user_id, article_id) SELECT ?, id FROM target ON CONFLICT DO NOTHING RETURNING 1)
+SELECT a.id, a.slug, a.title, a.description, a.body, a.created_at, a.updated_at,
+       ARRAY(SELECT (SELECT t.name FROM tags t WHERE t.id = at.tag_id) FROM article_tags at WHERE at.article_id = a.id ORDER BY 1) AS tag_list,
+       (SELECT count(*) FROM favorites f WHERE f.article_id = a.id) + (SELECT count(*) FROM added) AS favorites_count,
+       true AS favorited,
+       u.username, u.bio, u.image,
+       EXISTS (SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followee_id = a.author_id) AS following
+  FROM target JOIN articles a ON a.id = target.id JOIN users u ON u.id = a.author_id
+
+=== UNFAVORITE_BY_SLUG (774 chars)
+
+WITH target AS (SELECT id FROM articles WHERE slug = ?),
+     removed AS (DELETE FROM favorites WHERE user_id = ? AND article_id IN (SELECT id FROM target) RETURNING 1)
+SELECT a.id, a.slug, a.title, a.description, a.body, a.created_at, a.updated_at,
+       ARRAY(SELECT (SELECT t.name FROM tags t WHERE t.id = at.tag_id) FROM article_tags at WHERE at.article_id = a.id ORDER BY 1) AS tag_list,
+       (SELECT count(*) FROM favorites f WHERE f.article_id = a.id) - (SELECT count(*) FROM removed) AS favorites_count,
+       false AS favorited,
+       u.username, u.bio, u.image,
+       EXISTS (SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followee_id = a.author_id) AS following
+  FROM target JOIN articles a ON a.id = target.id JOIN users u ON u.id = a.author_id
+
+=== COMMENTS_BY_ARTICLE_SLUG (553 chars)
+
+SELECT target.id AS article_id, comment.*
+  FROM (SELECT id FROM articles WHERE slug = ?) target
+  LEFT JOIN LATERAL (
+       SELECT c.id, c.body, c.created_at, c.updated_at, u.username, u.bio, u.image,
+              EXISTS (SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followee_id = c.author_id) AS following
+         FROM comments c JOIN users u ON u.id = c.author_id
+        WHERE c.article_id = target.id
+        ORDER BY c.created_at DESC, c.id DESC
+        LIMIT 100) comment ON true
+ ORDER BY comment.created_at DESC, comment.id DESC
+
+=== COMMENT_INSERT_BY_SLUG (353 chars)
+
+WITH target AS (SELECT id FROM articles WHERE slug = ?),
+     c AS (INSERT INTO comments (article_id, author_id, body) SELECT id, ?, ? FROM target
+           RETURNING id, body, created_at, updated_at, author_id)
+SELECT c.id, c.body, c.created_at, c.updated_at, u.username, u.bio, u.image, false AS following
+  FROM c JOIN users u ON u.id = c.author_id
+
+=== COMMENT_OWNER (105 chars)
+
+SELECT c.author_id FROM comments c JOIN articles a ON a.id = c.article_id
+ WHERE c.id = ? AND a.slug = ?
+
+=== COMMENT_DELETE (33 chars)
+DELETE FROM comments WHERE id = ?
+
+=== TAGS (35 chars)
+SELECT name FROM tags ORDER BY name
+
