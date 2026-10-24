@@ -27,6 +27,8 @@ kotlin {
                     freeCompilerArgs += "-Xoverride-konan-properties=" +
                         "targetCpu.linux_x64=$cpu;targetCpuFeatures.linux_x64=$features"
                 }
+                // Try to inline more aggressively
+                freeCompilerArgs += "-Xbinary=preCodegenInlineThreshold=40"
             }
         }
     }

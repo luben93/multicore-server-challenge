@@ -22,6 +22,7 @@ import platform.linux.EPOLLERR
 import platform.linux.EPOLLHUP
 import platform.linux.EPOLLIN
 import platform.linux.EPOLLOUT
+import platform.linux.EPOLLET
 import platform.linux.EPOLL_CTL_ADD
 import platform.linux.EPOLL_CTL_DEL
 import platform.linux.EPOLL_CTL_MOD
@@ -138,8 +139,8 @@ private class EpollLoop(val index: Int, val listenFd: Int, val engine: HttpEngin
     private var acceptPausedUntil = 0L
 
     init {
-        ctl(EPOLL_CTL_ADD, listenFd, EPOLLIN.toUInt())
-        ctl(EPOLL_CTL_ADD, wakeFd, EPOLLIN.toUInt())
+        ctl(EPOLL_CTL_ADD, listenFd, (EPOLLIN or EPOLLET).toUInt())
+        ctl(EPOLL_CTL_ADD, wakeFd, (EPOLLIN or EPOLLET).toUInt())
     }
 
     fun ctl(op: Int, fd: Int, ev: UInt): Int = memScoped {
@@ -156,7 +157,7 @@ private class EpollLoop(val index: Int, val listenFd: Int, val engine: HttpEngin
                 val left = (acceptPausedUntil - nanoTime()) / 1_000_000
                 if (left <= 0) {
                     acceptPausedUntil = 0
-                    ctl(EPOLL_CTL_MOD, listenFd, EPOLLIN.toUInt())
+                    ctl(EPOLL_CTL_MOD, listenFd, (EPOLLIN or EPOLLET).toUInt())
                 } else timeout = left.toInt() + 1
             }
             sleeping.value = 1 // then re-check tasks: a poster that saw sleeping == 0 relies on this check
@@ -188,7 +189,7 @@ private class EpollLoop(val index: Int, val listenFd: Int, val engine: HttpEngin
 
     private fun handle(c: NativeConn, flags: UInt) {
         if (flags and EPOLLOUT.toUInt() != 0u) {
-            ctl(EPOLL_CTL_MOD, c.fd, EPOLLIN.toUInt())
+            ctl(EPOLL_CTL_MOD, c.fd, (EPOLLIN or EPOLLET).toUInt())
             if (!c.isClosing()) engine.onWritable(c)
         }
         if (flags and (EPOLLIN.toUInt() or EPOLLHUP.toUInt() or EPOLLERR.toUInt()) != 0u) {
@@ -226,7 +227,7 @@ private class EpollLoop(val index: Int, val listenFd: Int, val engine: HttpEngin
             if (fd >= conns.size) conns = conns.copyOf(maxOf(fd + 1, conns.size * 2))
             val c = NativeConn(fd, this)
             conns[fd] = c
-            ctl(EPOLL_CTL_ADD, fd, EPOLLIN.toUInt())
+            ctl(EPOLL_CTL_ADD, fd, (EPOLLIN or EPOLLET).toUInt())
             try {
                 engine.onOpen(c)
             } catch (e: Throwable) {
@@ -284,7 +285,7 @@ private class EpollLoop(val index: Int, val listenFd: Int, val engine: HttpEngin
 
     fun armWrite(c: NativeConn) {
         // epoll_ctl is thread-safe; the EPOLLOUT event is then delivered to this loop's thread
-        ctl(EPOLL_CTL_MOD, c.fd, (EPOLLIN or EPOLLOUT).toUInt())
+        ctl(EPOLL_CTL_MOD, c.fd, (EPOLLIN or EPOLLOUT or EPOLLET).toUInt())
     }
 }
 
