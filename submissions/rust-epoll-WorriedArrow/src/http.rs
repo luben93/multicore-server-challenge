@@ -37,6 +37,9 @@ pub struct Server {
     free: Vec<u32>,
     scratch: Vec<u8>,
     keys: &'static crate::jwt::Keys,
+    /// While set, the listener is out of the epoll set (accept failed for lack of descriptors or memory); it goes
+    /// back in at that time. A level-triggered listener would otherwise wake the loop again at once and spin.
+    accept_paused: Option<std::time::Instant>,
 }
 
 fn cvt(r: i32) -> io::Result<i32> {
@@ -102,7 +105,7 @@ impl Server {
     pub fn new(thread: u16, lfd: RawFd, keys: &'static crate::jwt::Keys) -> io::Result<Server> {
         let ep = cvt(unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) })?;
         let efd = reply::outbox(thread as usize).efd;
-        let s = Server { thread, ep, lfd, efd, conns: Vec::new(), free: Vec::new(), scratch: vec![0; 256 * 1024], keys };
+        let s = Server { thread, ep, lfd, efd, conns: Vec::new(), free: Vec::new(), scratch: vec![0; 256 * 1024], keys, accept_paused: None };
         s.ctl(libc::EPOLL_CTL_ADD, lfd, libc::EPOLLIN as u32, LISTENER)?;
         s.ctl(libc::EPOLL_CTL_ADD, efd, libc::EPOLLIN as u32, OUTBOX)?;
         Ok(s)
@@ -117,7 +120,16 @@ impl Server {
     pub fn run(mut self) {
         let mut events: Vec<libc::epoll_event> = vec![libc::epoll_event { events: 0, u64: 0 }; 1024];
         loop {
-            let n = unsafe { libc::epoll_wait(self.ep, events.as_mut_ptr(), events.len() as i32, -1) };
+            let timeout = match self.accept_paused {
+                Some(t) => t.saturating_duration_since(std::time::Instant::now()).as_millis() as i32 + 1,
+                None => -1,
+            };
+            let n = unsafe { libc::epoll_wait(self.ep, events.as_mut_ptr(), events.len() as i32, timeout) };
+            if let Some(t) = self.accept_paused {
+                if std::time::Instant::now() >= t && self.ctl(libc::EPOLL_CTL_ADD, self.lfd, libc::EPOLLIN as u32, LISTENER).is_ok() {
+                    self.accept_paused = None;
+                }
+            }
             if n < 0 {
                 let e = io::Error::last_os_error();
                 if e.kind() == io::ErrorKind::Interrupted {
@@ -153,7 +165,13 @@ impl Server {
                     Some(libc::EAGAIN) => return,
                     Some(libc::EINTR) | Some(libc::ECONNABORTED) => continue,
                     _ => {
-                        eprintln!("accept: {e}");
+                        // Out of descriptors or memory: stop watching the listener for 100 ms. Open connections
+                        // keep being served, and closing some of them frees descriptors.
+                        if self.accept_paused.is_none() {
+                            eprintln!("accept: {e}; pausing accepts for 100 ms");
+                            let _ = self.ctl(libc::EPOLL_CTL_DEL, self.lfd, 0, LISTENER);
+                            self.accept_paused = Some(std::time::Instant::now() + std::time::Duration::from_millis(100));
+                        }
                         return;
                     }
                 }

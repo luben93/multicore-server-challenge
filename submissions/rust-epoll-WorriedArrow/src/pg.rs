@@ -330,7 +330,8 @@ impl Conn {
         // Session settings only. plan_cache_mode: every statement here takes arrays of a batch's keys, and the default
         // ("auto") keeps re-planning them per execution because a custom plan looks cheaper for each array. jit: a
         // generic plan can't see LIMIT values or array sizes, its cost estimate crosses jit_above_cost, and compiling
-        // costs milliseconds per execution of a sub-millisecond statement.
+        // costs milliseconds per execution of a sub-millisecond statement. max_parallel_workers_per_gather: a generic
+        // plan can't see how small a batch's arrays are; parallel workers would only add startup cost.
         for (k, v) in [
             ("user", cfg.user.as_str()),
             ("database", cfg.dbname.as_str()),
@@ -338,6 +339,7 @@ impl Conn {
             ("DateStyle", "ISO"),
             ("plan_cache_mode", "force_generic_plan"),
             ("jit", "off"),
+            ("max_parallel_workers_per_gather", "0"),
         ] {
             m.extend_from_slice(k.as_bytes());
             m.push(0);

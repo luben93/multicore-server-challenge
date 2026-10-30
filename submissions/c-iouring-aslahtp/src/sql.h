@@ -55,14 +55,15 @@ enum stmt {
     P_AUTHOR_COUNTS,
     P_FAV_PAGES,
     P_FAV_COUNTS,
-    P_FEED_PAGES,
-    P_FEED_COUNTS,
+    P_FEED,
     P_ARTICLES,
     P_COMMENTS,
     P_PROFILES,
     /* ... and phase B: each distinct article enriched once, and every viewer's flags. */
     P_ARTX,
     P_FLAGS,
+    P_TAGDICT,
+    P_AUTHORS,
     S_COUNT
 };
 
@@ -81,3 +82,6 @@ extern char stmt_names[S_COUNT][8];  /* "s<index>" */
 
 /* Session settings sent once on every connection (rule 2 allows session-level SET). */
 extern const char *const session_sql[];
+/* Extra planner settings, sent after session_sql when session_tune is set (PG_TUNE). */
+extern const char *const session_tune_sql[];
+extern bool session_tune;

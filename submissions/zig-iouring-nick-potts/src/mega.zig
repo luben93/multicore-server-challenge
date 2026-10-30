@@ -1,8 +1,10 @@
 //! The mega statement (`sql.mega`, MEGA from branch sql-stack): a drain's mega-able reads as one execution.
 //!
 //! `encode` binds its six arrays. `Result` keeps the rows as they arrive, since a read's rows take their shared
-//! columns from entity rows that may come later. At the end it hands each read its rows in the column layout of the
-//! read's own statement, filled and sorted as that statement returns them, so the API writes the same JSON.
+//! columns from entity rows that may come later. A list read's page arrives as one row of arrays and is expanded
+//! into one row per article here, with the viewer flags. At the end it hands each read its rows in the column
+//! layout of the read's own statement, filled and sorted as that statement returns them, so the API writes the same
+//! JSON.
 const std = @import("std");
 const sql = @import("sql.zig");
 const pg = @import("pg.zig");
@@ -10,6 +12,7 @@ const Query = @import("db.zig").Query;
 
 const gpa = std.heap.smp_allocator;
 const ncols = sql.mega.cols.len;
+const page = sql.mega.page;
 
 /// Binds MEGA (prepared as `name`) with one array element per read and executes it. A read's ordinal is its
 /// 1-based position in `reads`.
@@ -63,7 +66,66 @@ pub const Result = struct {
             c.off[i] = base + row.off[i];
             c.len[i] = row.len[i];
         }
-        try m.rows.append(gpa, c);
+        if (c.len[page.ids] < 0) return m.rows.append(gpa, c);
+        try m.expand(c);
+    }
+
+    /// A list read's page row, with the page's article ids and their authors and the viewer's favorites and
+    /// followees among them as arrays, becomes one row per article: the id from the ids array, favorited and
+    /// following as a byte each appended after the row, the rest NULL as on the page row. A NULL followees array
+    /// means every author is followed (the feed).
+    fn expand(m: *Result, p: Cols) !void {
+        const ids = try m.array(&p, page.ids);
+        const aus = try m.array(&p, page.aus);
+        const fa = try m.array(&p, page.fa);
+        const fw: ?Array = if (p.len[page.fw] < 0) null else try m.array(&p, page.fw);
+        if (aus.n != ids.n) return error.BadMegaPage;
+        const flags: u32 = @intCast(m.data.items.len);
+        try m.data.appendNTimes(gpa, 0, 2 * ids.n);
+        for (0..ids.n) |i| {
+            var c = p;
+            c.off[page.id] = ids.at(i);
+            c.len[page.id] = 8;
+            const fav = flags + 2 * @as(u32, @intCast(i));
+            m.data.items[fav] = @intFromBool(m.has(fa, m.at(ids.at(i))));
+            m.data.items[fav + 1] = @intFromBool(if (fw) |w| m.has(w, m.at(aus.at(i))) else true);
+            c.off[page.favorited] = fav;
+            c.len[page.favorited] = 1;
+            c.off[page.following] = fav + 1;
+            c.len[page.following] = 1;
+            try m.rows.append(gpa, c);
+        }
+    }
+
+    /// A one-dimensional int8[] without NULLs in `data`: 20 header bytes (12 when empty), then 4 length bytes and 8
+    /// value bytes per element.
+    const Array = struct {
+        off: u32,
+        n: u32,
+
+        fn at(a: Array, i: usize) u32 {
+            return a.off + 20 + 12 * @as(u32, @intCast(i)) + 4;
+        }
+    };
+
+    fn array(m: *const Result, c: *const Cols, col: usize) !Array {
+        const len = c.len[col];
+        if (len < 12) return error.BadMegaArray;
+        const b = m.data.items[c.off[col]..][0..@intCast(len)];
+        if (std.mem.readInt(i32, b[0..4], .big) == 0) return .{ .off = c.off[col], .n = 0 };
+        if (len < 20 or std.mem.readInt(i32, b[0..4], .big) != 1 or std.mem.readInt(i32, b[4..8], .big) != 0) return error.BadMegaArray;
+        const n = std.mem.readInt(i32, b[12..16], .big);
+        if (n < 0 or 20 + 12 * n != len) return error.BadMegaArray;
+        return .{ .off = c.off[col], .n = @intCast(n) };
+    }
+
+    fn at(m: *const Result, off: u32) i64 {
+        return std.mem.readInt(i64, m.data.items[off..][0..8], .big);
+    }
+
+    fn has(m: *const Result, a: Array, v: i64) bool {
+        for (0..a.n) |i| if (m.at(a.at(i)) == v) return true;
+        return false;
     }
 
     pub fn reset(m: *Result) void {
@@ -82,7 +144,7 @@ pub const Result = struct {
             if (ord < 0) {
                 if (-ord > sql.mega.keys.len) return error.MegaOrdinal;
                 const t: usize = @intCast(-ord - 1);
-                const col = sql.mega.keys[t] orelse return error.MegaOrdinal;
+                const col = sql.mega.keys[t];
                 const key = m.int(c, col) orelse return error.MegaEntityKey;
                 try m.entities[t].put(gpa, key, @intCast(i));
             } else {
@@ -117,7 +179,7 @@ pub const Result = struct {
     fn assemble(m: *const Result, spec: sql.Mega, c: *const Cols) pg.Row {
         var e: *const Cols = c;
         if (spec.fill != 0) {
-            if (m.int(c, sql.mega.keys[spec.fill - 1].?)) |key| {
+            if (m.int(c, sql.mega.keys[spec.fill - 1])) |key| {
                 if (m.entities[spec.fill - 1].get(key)) |i| e = &m.rows.items[i];
             }
         }
@@ -153,7 +215,7 @@ fn sortKey(r: *const pg.Row, col: usize) i64 {
 // ---------------------------------------------------------------- tests
 
 const testing = std.testing;
-const Cell = union(enum) { int: i64, text: []const u8, boolean: bool, tags: []const []const u8 };
+const Cell = union(enum) { int: i64, text: []const u8, boolean: bool, tags: []const []const u8, ints: []const i64 };
 
 fn testReq(stmt: sql.Stmt, params: []const @import("db.zig").Param) Query {
     var r: Query = .{ .stmt = stmt };
@@ -197,11 +259,11 @@ fn readArray(out: *std.ArrayList(u8), b: []const u8, p: *usize) !void {
 test "encode lays reads out as six arrays in order, NULL where a read has no value" {
     var reqs = [_]Query{
         testReq(.list_tag, &.{ .{ .int = 0 }, .{ .int = 20 }, .{ .int = 40 }, .{ .text = "dragons" } }),
-        testReq(.user_by_id, &.{.{ .int = 7 }}),
+        testReq(.article_by_slug, &.{ .{ .int = 7 }, .{ .text = "how-to" } }),
         testReq(.list_feed, &.{ .{ .int = 7 }, .{ .int = 10 }, .{ .int = 5 }, .{ .int = 15 } }),
         testReq(.article_by_id, &.{ .{ .int = 3 }, .{ .int = 42 } }),
-        testReq(.tags, &.{}),
-        testReq(.profile, &.{ .{ .int = 0 }, .{ .text = "jake" } }),
+        testReq(.list_all, &.{ .{ .int = 0 }, .{ .int = 20 }, .{ .int = 0 } }),
+        testReq(.list_author, &.{ .{ .int = 0 }, .{ .int = 20 }, .{ .int = 0 }, .{ .text = "jake" } }),
     };
     var ptrs: [reqs.len]*Query = undefined;
     for (&reqs, &ptrs) |*r, *p| p.* = r;
@@ -216,12 +278,12 @@ test "encode lays reads out as six arrays in order, NULL where a read has no val
     defer got.deinit(testing.allocator);
     for (0..6) |_| try readArray(&got, b, &p);
     try testing.expectEqualStrings(
-        \\2 10 5 7 12 9
+        \\2 6 5 7 1 3
         \\- 7 7 3 - -
-        \\20 - 10 42 - -
-        \\40 - 5 - - -
+        \\20 - 10 42 20 20
+        \\40 - 5 - 0 0
         \\- - 15 - - -
-        \\'dragons' - - - - 'jake'
+        \\'dragons' 'how-to' - - - 'jake'
         \\
     , got.items);
     try testing.expectEqualSlices(u8, "\x00\x01\x00\x01E\x00\x00\x00\x09\x00\x00\x00\x00\x00", b[p..]);
@@ -268,6 +330,17 @@ fn addRow(m: *Result, ord: i64, cells: []const struct { u8, Cell }) !void {
                 for (ts) |t| {
                     try w(&b, i32, @intCast(t.len));
                     try b.appendSlice(testing.allocator, t);
+                }
+            },
+            .ints => |xs| if (xs.len == 0) {
+                try w(&b, i32, 12);
+                for ([_]i32{ 0, 0, @intFromEnum(sql.Oid.int8) }) |h| try w(&b, i32, h);
+            } else {
+                try w(&b, i32, @intCast(20 + 12 * xs.len));
+                for ([_]i32{ 1, 0, @intFromEnum(sql.Oid.int8), @intCast(xs.len), 1 }) |h| try w(&b, i32, h);
+                for (xs) |x| {
+                    try w(&b, i32, 8);
+                    try w(&b, i64, x);
                 }
             },
         }
@@ -317,12 +390,9 @@ const Recorder = struct {
 test "deliver hands each read its own statement's rows, filled from entity rows and sorted" {
     var reqs = [_]Query{
         testReq(.list_all, &.{ .{ .int = 0 }, .{ .int = 20 }, .{ .int = 0 } }),
-        testReq(.tags, &.{}),
         testReq(.article_by_slug, &.{ .{ .int = 0 }, .{ .text = "missing" } }),
-        testReq(.profile, &.{ .{ .int = 4 }, .{ .text = "bob" } }),
         testReq(.list_author, &.{ .{ .int = 0 }, .{ .int = 20 }, .{ .int = 0 }, .{ .text = "nobody" } }),
         testReq(.article_by_id, &.{ .{ .int = 4 }, .{ .int = 9 } }),
-        testReq(.user_by_id, &.{.{ .int = 4 }}),
     };
     var ptrs: [reqs.len]*Query = undefined;
     for (&reqs, &ptrs) |*r, *p| p.* = r;
@@ -330,15 +400,11 @@ test "deliver hands each read its own statement's rows, filled from entity rows 
     var m: Result = .{};
     // The reads' own rows first, unsorted; every entity row after them.
     try addRow(&m, 1, &.{ .{ 0, .{ .int = 2 } }, .{ 1, .{ .int = 5 } }, .{ 10, .{ .boolean = false } }, .{ 14, .{ .boolean = true } } });
-    try addRow(&m, 6, &.{ .{ 1, .{ .int = 9 } }, .{ 10, .{ .boolean = true } }, .{ 14, .{ .boolean = false } } });
+    try addRow(&m, 4, &.{ .{ 1, .{ .int = 9 } }, .{ 10, .{ .boolean = true } }, .{ 14, .{ .boolean = false } } });
     try addRow(&m, 1, &.{ .{ 0, .{ .int = 2 } }, .{ 1, .{ .int = 9 } }, .{ 10, .{ .boolean = true } }, .{ 14, .{ .boolean = false } } });
-    try addRow(&m, 2, &.{.{ 0, .{ .int = 0 } }});
-    try addRow(&m, 4, &.{ .{ 11, .{ .text = "bob" } }, .{ 12, .{ .text = "hi" } }, .{ 14, .{ .boolean = true } } });
-    try addRow(&m, 5, &.{ .{ 0, .{ .int = 0 } }, .{ 10, .{ .boolean = false } }, .{ 14, .{ .boolean = false } } });
-    try addRow(&m, 7, &.{ .{ 1, .{ .int = 4 } }, .{ 11, .{ .text = "amy" } }, .{ 16, .{ .text = "amy@x" } } });
+    try addRow(&m, 3, &.{ .{ 0, .{ .int = 0 } }, .{ 10, .{ .boolean = false } }, .{ 14, .{ .boolean = false } } });
     try addRow(&m, -1, &.{ .{ 1, .{ .int = 9 } }, .{ 2, .{ .text = "s9" } }, .{ 3, .{ .text = "T9" } }, .{ 4, .{ .text = "D9" } }, .{ 5, .{ .text = "B9" } }, .{ 6, .{ .int = 90 } }, .{ 7, .{ .int = 91 } }, .{ 8, .{ .tags = &.{ "a", "b" } } }, .{ 9, .{ .int = 3 } }, .{ 11, .{ .text = "amy" } } });
     try addRow(&m, -1, &.{ .{ 1, .{ .int = 5 } }, .{ 2, .{ .text = "s5" } }, .{ 3, .{ .text = "T5" } }, .{ 4, .{ .text = "D5" } }, .{ 6, .{ .int = 50 } }, .{ 7, .{ .int = 51 } }, .{ 8, .{ .tags = &.{} } }, .{ 9, .{ .int = 0 } }, .{ 11, .{ .text = "bob" } }, .{ 12, .{ .text = "hi" } } });
-    try addRow(&m, -3, &.{ .{ 0, .{ .int = 0 } }, .{ 8, .{ .tags = &.{ "a", "b", "c" } } } });
 
     var got: std.ArrayList(u8) = .empty;
     defer got.deinit(testing.allocator);
@@ -347,27 +413,64 @@ test "deliver hands each read its own statement's rows, filled from entity rows 
         \\list_all 2 9 's9' 'T9' 'D9' 90 91 [a,b] 3 t 'amy' - - f
         \\list_all 2 5 's5' 'T5' 'D5' 50 51 [] 0 f 'bob' 'hi' - t
         \\list_all done
-        \\tags [a,b,c]
-        \\tags done
         \\article_by_slug done
-        \\profile 'bob' 'hi' - t
-        \\profile done
         \\list_author 0 - - - - - - - - f - - - f
         \\list_author done
         \\article_by_id 9 's9' 'T9' 'D9' 'B9' 90 91 [a,b] 3 t 'amy' - - f
         \\article_by_id done
-        \\user_by_id 4 'amy' 'amy@x' - -
-        \\user_by_id done
         \\
     , got.items);
 }
 
-test "deliver refuses an entity type the statement has no key for" {
-    var reqs = [_]Query{testReq(.tags, &.{})};
+test "add expands a page row into one row per article, with the viewer's flags from the page's arrays" {
+    var reqs = [_]Query{
+        testReq(.list_all, &.{ .{ .int = 7 }, .{ .int = 20 }, .{ .int = 0 } }),
+        testReq(.list_feed, &.{ .{ .int = 7 }, .{ .int = 10 }, .{ .int = 0 }, .{ .int = 10 } }),
+        testReq(.list_tag, &.{ .{ .int = 0 }, .{ .int = 20 }, .{ .int = 0 }, .{ .text = "nothing" } }),
+    };
     var ptrs: [reqs.len]*Query = undefined;
     for (&reqs, &ptrs) |*r, *p| p.* = r;
     var m: Result = .{};
-    try addRow(&m, -2, &.{.{ 15, .{ .int = 100 } }});
+    // ids 9 and 5 are by author 1, who the viewer follows; the viewer favorited 5; 7 has no entity row.
+    try addRow(&m, 1, &.{ .{ 0, .{ .int = 3 } }, .{ 15, .{ .ints = &.{ 5, 9, 7 } } }, .{ 16, .{ .ints = &.{ 1, 1, 2 } } }, .{ 17, .{ .ints = &.{5} } }, .{ 18, .{ .ints = &.{1} } } });
+    // The feed's followees array is NULL: every author is followed.
+    try addRow(&m, 2, &.{ .{ 0, .{ .int = 1 } }, .{ 15, .{ .ints = &.{9} } }, .{ 16, .{ .ints = &.{1} } }, .{ 17, .{ .ints = &.{} } } });
+    // An empty page: NULL arrays, one row with the count.
+    try addRow(&m, 3, &.{.{ 0, .{ .int = 0 } }});
+    try addRow(&m, -1, &.{ .{ 1, .{ .int = 9 } }, .{ 2, .{ .text = "s9" } }, .{ 3, .{ .text = "T9" } }, .{ 4, .{ .text = "D9" } }, .{ 5, .{ .text = "B9" } }, .{ 6, .{ .int = 90 } }, .{ 7, .{ .int = 91 } }, .{ 8, .{ .tags = &.{ "a", "b" } } }, .{ 9, .{ .int = 3 } }, .{ 11, .{ .text = "amy" } } });
+    try addRow(&m, -1, &.{ .{ 1, .{ .int = 5 } }, .{ 2, .{ .text = "s5" } }, .{ 3, .{ .text = "T5" } }, .{ 4, .{ .text = "D5" } }, .{ 6, .{ .int = 50 } }, .{ 7, .{ .int = 51 } }, .{ 8, .{ .tags = &.{} } }, .{ 9, .{ .int = 0 } }, .{ 11, .{ .text = "amy" } } });
+    try testing.expectEqual(7, m.rows.items.len);
+
+    var got: std.ArrayList(u8) = .empty;
+    defer got.deinit(testing.allocator);
+    try m.deliver(&ptrs, Recorder{ .out = &got });
+    try testing.expectEqualStrings(
+        \\list_all 3 9 's9' 'T9' 'D9' 90 91 [a,b] 3 f 'amy' - - t
+        \\list_all 3 7 - - - - - - - f - - - f
+        \\list_all 3 5 's5' 'T5' 'D5' 50 51 [] 0 t 'amy' - - t
+        \\list_all done
+        \\list_feed 1 9 's9' 'T9' 'D9' 90 91 [a,b] 3 f 'amy' - - t
+        \\list_feed done
+        \\list_tag 0 - - - - - - - - - - - - -
+        \\list_tag done
+        \\
+    , got.items);
+}
+
+test "add refuses a page whose arrays are not one-dimensional int8 without NULLs, or of different lengths" {
+    var m: Result = .{};
+    try testing.expectError(error.BadMegaPage, addRow(&m, 1, &.{ .{ 0, .{ .int = 2 } }, .{ 15, .{ .ints = &.{ 5, 9 } } }, .{ 16, .{ .ints = &.{1} } }, .{ 17, .{ .ints = &.{} } }, .{ 18, .{ .ints = &.{} } } }));
+    // A text[] where an int8[] is expected: the element type is not checked, but the lengths do not add up.
+    try testing.expectError(error.BadMegaArray, addRow(&m, 1, &.{ .{ 0, .{ .int = 1 } }, .{ 15, .{ .tags = &.{"x"} } }, .{ 16, .{ .ints = &.{1} } }, .{ 17, .{ .ints = &.{} } }, .{ 18, .{ .ints = &.{} } } }));
+    try testing.expectEqual(0, m.rows.items.len);
+}
+
+test "deliver refuses an entity type other than the article" {
+    var reqs = [_]Query{testReq(.list_all, &.{ .{ .int = 0 }, .{ .int = 20 }, .{ .int = 0 } })};
+    var ptrs: [reqs.len]*Query = undefined;
+    for (&reqs, &ptrs) |*r, *p| p.* = r;
+    var m: Result = .{};
+    try addRow(&m, -3, &.{.{ 0, .{ .int = 0 } }});
     var got: std.ArrayList(u8) = .empty;
     defer got.deinit(testing.allocator);
     try testing.expectError(error.MegaOrdinal, m.deliver(&ptrs, Recorder{ .out = &got }));

@@ -1,0 +1,14 @@
+name: conduit-rayo
+version: 0.1.0
+
+targets:
+  server:
+    main: src/server.cr
+
+dependencies:
+  rayo:
+    github: faustinoaq/rayo
+    commit: c9553d94583fe2a56ab299e3788fe40dcd0e72b2
+
+crystal: ">= 1.22.0"
+license: MIT
